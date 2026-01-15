@@ -90,6 +90,25 @@ interface FileContentOptions extends ListOptions {
   branch?: string;
 }
 
+interface DiffFilterOptions {
+  includePaths?: string[];
+  excludePaths?: string[];
+  maxFiles?: number;
+  maxTotalLines?: number;
+}
+
+interface DiffStatsResult {
+  totalFiles: number;
+  totalAdditions: number;
+  totalDeletions: number;
+  files: Array<{
+    path: string;
+    additions: number;
+    deletions: number;
+    type: string;
+  }>;
+}
+
 class BitbucketServer {
   private readonly server: Server;
   private readonly api: AxiosInstance;
@@ -159,7 +178,7 @@ class BitbucketServer {
   }
 
   private setupToolHandlers() {
-    const readOnlyTools = ['list_projects', 'list_repositories', 'get_pull_request', 'get_diff', 'get_reviews', 'get_activities', 'get_comments', 'search', 'get_file_content', 'browse_repository'];
+    const readOnlyTools = ['list_projects', 'list_repositories', 'get_pull_request', 'get_diff', 'get_diff_stats', 'get_diff_for_files', 'get_reviews', 'get_activities', 'get_comments', 'search', 'get_file_content', 'browse_repository'];
     
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
@@ -288,7 +307,7 @@ class BitbucketServer {
         },
         {
           name: 'get_diff',
-          description: 'Retrieve the code differences (diff) for a pull request showing what lines were added, removed, or modified. Use this to understand the scope of changes, review specific code modifications, or analyze the impact of proposed changes before merging.',
+          description: 'Retrieve the code differences (diff) for a pull request showing what lines were added, removed, or modified. Use this to understand the scope of changes, review specific code modifications, or analyze the impact of proposed changes before merging. For large PRs (e.g., merge commits), use filtering options or get_diff_stats first.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -296,9 +315,61 @@ class BitbucketServer {
               repository: { type: 'string', description: 'Repository slug containing the pull request.' },
               prId: { type: 'number', description: 'Pull request ID to get diff for.' },
               contextLines: { type: 'number', description: 'Number of context lines to show around changes (default: 10). Higher values provide more surrounding code context.' },
-              maxLinesPerFile: { type: 'number', description: 'Maximum number of lines to show per file (default: uses BITBUCKET_DIFF_MAX_LINES_PER_FILE env var). Set to 0 for no limit. Prevents large files from overwhelming the diff output.' }
+              maxLinesPerFile: { type: 'number', description: 'Maximum number of lines to show per file (default: uses BITBUCKET_DIFF_MAX_LINES_PER_FILE env var). Set to 0 for no limit. Prevents large files from overwhelming the diff output.' },
+              includePaths: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Glob patterns to include (e.g., ["src/**/*.ts", "*.md"]). Only files matching these patterns will be included.'
+              },
+              excludePaths: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Glob patterns to exclude (e.g., ["**/package-lock.json", "**/dist/**", "**/*.min.js"]). Files matching these patterns will be excluded.'
+              },
+              maxFiles: {
+                type: 'number',
+                description: 'Maximum number of files to include in the diff output (default: no limit). Use to prevent overwhelming output for large PRs.'
+              },
+              maxTotalLines: {
+                type: 'number',
+                description: 'Maximum total lines across all files (default: no limit). Diff will stop including files once this limit is reached.'
+              }
             },
             required: ['repository', 'prId']
+          }
+        },
+        {
+          name: 'get_diff_stats',
+          description: 'Get summary statistics for a pull request diff without the full content. Use this first for large PRs to understand the scope of changes before fetching the full diff. Returns file count, total additions/deletions, and per-file statistics.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              project: { type: 'string', description: 'Bitbucket project key. If omitted, uses BITBUCKET_DEFAULT_PROJECT environment variable.' },
+              repository: { type: 'string', description: 'Repository slug containing the pull request.' },
+              prId: { type: 'number', description: 'Pull request ID to get diff stats for.' },
+              limit: { type: 'number', description: 'Maximum number of files to return in the stats (default: 1000).' },
+              start: { type: 'number', description: 'Start index for pagination (default: 0).' }
+            },
+            required: ['repository', 'prId']
+          }
+        },
+        {
+          name: 'get_diff_for_files',
+          description: 'Get diff for specific files in a pull request. Use this when you only need to see changes for particular files, especially after using get_diff_stats to identify files of interest.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              project: { type: 'string', description: 'Bitbucket project key. If omitted, uses BITBUCKET_DEFAULT_PROJECT environment variable.' },
+              repository: { type: 'string', description: 'Repository slug containing the pull request.' },
+              prId: { type: 'number', description: 'Pull request ID to get diff for.' },
+              filePaths: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Specific file paths to get diff for (e.g., ["src/index.ts", "README.md"]).'
+              },
+              contextLines: { type: 'number', description: 'Number of context lines to show around changes (default: 10).' }
+            },
+            required: ['repository', 'prId', 'filePaths']
           }
         },
         {
@@ -510,10 +581,43 @@ class BitbucketServer {
               repository: args.repository as string,
               prId: args.prId as number
             };
+            const filterOptions: DiffFilterOptions = {
+              includePaths: args.includePaths as string[],
+              excludePaths: args.excludePaths as string[],
+              maxFiles: args.maxFiles as number,
+              maxTotalLines: args.maxTotalLines as number
+            };
             return await this.getDiff(
-              diffPrParams, 
-              args.contextLines as number, 
-              args.maxLinesPerFile as number
+              diffPrParams,
+              args.contextLines as number,
+              args.maxLinesPerFile as number,
+              filterOptions
+            );
+          }
+
+          case 'get_diff_stats': {
+            const statsPrParams: PullRequestParams = {
+              project: getProject(args.project as string),
+              repository: args.repository as string,
+              prId: args.prId as number
+            };
+            return await this.getDiffStats(
+              statsPrParams,
+              args.limit as number,
+              args.start as number
+            );
+          }
+
+          case 'get_diff_for_files': {
+            const filesDiffParams: PullRequestParams = {
+              project: getProject(args.project as string),
+              repository: args.repository as string,
+              prId: args.prId as number
+            };
+            return await this.getDiffForFiles(
+              filesDiffParams,
+              args.filePaths as string[],
+              args.contextLines as number
             );
           }
 
@@ -916,16 +1020,144 @@ class BitbucketServer {
     return result;
   }
 
-  private async getDiff(params: PullRequestParams, contextLines: number = 10, maxLinesPerFile?: number) {
+  private matchesGlobPattern(filePath: string, pattern: string): boolean {
+    // Convert glob pattern to regex
+    // Supports: *, **, ?
+    const regexPattern = pattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&') // Escape regex special chars except * and ?
+      .replace(/\*\*/g, '{{GLOBSTAR}}') // Placeholder for **
+      .replace(/\*/g, '[^/]*') // * matches anything except /
+      .replace(/\?/g, '[^/]') // ? matches single char except /
+      .replace(/\{\{GLOBSTAR\}\}/g, '.*'); // ** matches anything including /
+
+    const regex = new RegExp(`^${regexPattern}$`);
+    return regex.test(filePath);
+  }
+
+  private fileMatchesPatterns(filePath: string, includePatterns?: string[], excludePatterns?: string[]): boolean {
+    // If exclude patterns exist and file matches any, exclude it
+    if (excludePatterns && excludePatterns.length > 0) {
+      for (const pattern of excludePatterns) {
+        if (this.matchesGlobPattern(filePath, pattern)) {
+          return false;
+        }
+      }
+    }
+
+    // If include patterns exist, file must match at least one
+    if (includePatterns && includePatterns.length > 0) {
+      for (const pattern of includePatterns) {
+        if (this.matchesGlobPattern(filePath, pattern)) {
+          return true;
+        }
+      }
+      return false; // Didn't match any include pattern
+    }
+
+    return true; // No include patterns, and didn't match exclude patterns
+  }
+
+  private filterDiff(diffContent: string, filterOptions: DiffFilterOptions): { filtered: string; stats: { includedFiles: number; excludedFiles: number; totalLines: number } } {
+    const { includePaths, excludePaths, maxFiles, maxTotalLines } = filterOptions;
+
+    // If no filtering needed, return original
+    if (!includePaths?.length && !excludePaths?.length && !maxFiles && !maxTotalLines) {
+      return {
+        filtered: diffContent,
+        stats: { includedFiles: 0, excludedFiles: 0, totalLines: diffContent.split('\n').length }
+      };
+    }
+
+    const lines = diffContent.split('\n');
+    const result: string[] = [];
+    let currentFileLines: string[] = [];
+    let currentFileName = '';
+    let includedFiles = 0;
+    let excludedFiles = 0;
+    let totalLines = 0;
+    let reachedMaxFiles = false;
+    let reachedMaxLines = false;
+
+    const flushCurrentFile = () => {
+      if (currentFileLines.length === 0) return;
+
+      const shouldInclude = this.fileMatchesPatterns(currentFileName, includePaths, excludePaths);
+
+      if (shouldInclude && !reachedMaxFiles && !reachedMaxLines) {
+        // Check maxFiles
+        if (maxFiles && includedFiles >= maxFiles) {
+          reachedMaxFiles = true;
+          excludedFiles++;
+          currentFileLines = [];
+          return;
+        }
+
+        // Check maxTotalLines
+        if (maxTotalLines && totalLines + currentFileLines.length > maxTotalLines) {
+          reachedMaxLines = true;
+          excludedFiles++;
+          currentFileLines = [];
+          return;
+        }
+
+        result.push(...currentFileLines);
+        includedFiles++;
+        totalLines += currentFileLines.length;
+      } else {
+        excludedFiles++;
+      }
+      currentFileLines = [];
+    };
+
+    for (const line of lines) {
+      if (line.startsWith('diff --git ')) {
+        // Flush previous file
+        flushCurrentFile();
+
+        // Extract filename
+        const match = line.match(/diff --git a\/(.+) b\/(.+)/);
+        currentFileName = match ? match[2] : '';
+        currentFileLines.push(line);
+      } else if (currentFileName) {
+        currentFileLines.push(line);
+      } else {
+        // Lines before first file (shouldn't happen often)
+        result.push(line);
+      }
+    }
+
+    // Flush last file
+    flushCurrentFile();
+
+    // Add summary if files were filtered out
+    if (excludedFiles > 0) {
+      result.push('');
+      result.push(`[*** DIFF FILTERED: ${excludedFiles} files excluded ***]`);
+      if (reachedMaxFiles) {
+        result.push(`[*** Reached maxFiles limit of ${maxFiles} ***]`);
+      }
+      if (reachedMaxLines) {
+        result.push(`[*** Reached maxTotalLines limit of ${maxTotalLines} ***]`);
+      }
+      result.push(`[*** Showing ${includedFiles} files, ${totalLines} lines ***]`);
+    }
+
+    return {
+      filtered: result.join('\n'),
+      stats: { includedFiles, excludedFiles, totalLines }
+    };
+  }
+
+  private async getDiff(params: PullRequestParams, contextLines: number = 10, maxLinesPerFile?: number, filterOptions?: DiffFilterOptions) {
     const { project, repository, prId } = params;
-    
+
     if (!project || !repository || !prId) {
       throw new McpError(
         ErrorCode.InvalidParams,
         'Project, repository, and prId are required'
       );
     }
-    
+
     const response = await this.api.get(
       `/projects/${project}/repos/${repository}/pull-requests/${prId}/diff`,
       {
@@ -934,17 +1166,144 @@ class BitbucketServer {
       }
     );
 
+    let diffContent = response.data;
+
+    // Apply path filtering if specified
+    if (filterOptions) {
+      const { filtered } = this.filterDiff(diffContent, filterOptions);
+      diffContent = filtered;
+    }
+
     // Determine max lines per file: parameter > env var > no limit
-    const effectiveMaxLines = maxLinesPerFile !== undefined 
-      ? maxLinesPerFile 
+    const effectiveMaxLines = maxLinesPerFile !== undefined
+      ? maxLinesPerFile
       : this.config.maxLinesPerFile;
 
-    const diffContent = effectiveMaxLines 
-      ? this.truncateDiff(response.data, effectiveMaxLines)
-      : response.data;
+    // Apply per-file truncation
+    if (effectiveMaxLines) {
+      diffContent = this.truncateDiff(diffContent, effectiveMaxLines);
+    }
 
     return {
       content: [{ type: 'text', text: diffContent }]
+    };
+  }
+
+  private async getDiffStats(params: PullRequestParams, limit: number = 1000, start: number = 0): Promise<{ content: Array<{ type: string; text: string }> }> {
+    const { project, repository, prId } = params;
+
+    if (!project || !repository || !prId) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        'Project, repository, and prId are required'
+      );
+    }
+
+    // Fetch the changes (file list) for the PR
+    const response = await this.api.get(
+      `/projects/${project}/repos/${repository}/pull-requests/${prId}/changes`,
+      {
+        params: { limit, start }
+      }
+    );
+
+    const changes = response.data.values || [];
+    let totalAdditions = 0;
+    let totalDeletions = 0;
+
+    interface ChangeEntry {
+      path?: { toString?: string };
+      srcPath?: { toString?: string };
+      type?: string;
+      nodeType?: string;
+      properties?: {
+        gitChangeType?: string;
+        linesAdded?: number;
+        linesRemoved?: number;
+      };
+    }
+
+    const files = changes.map((change: ChangeEntry) => {
+      const additions = change.properties?.linesAdded || 0;
+      const deletions = change.properties?.linesRemoved || 0;
+      totalAdditions += additions;
+      totalDeletions += deletions;
+
+      return {
+        path: change.path?.toString || change.srcPath?.toString || 'unknown',
+        additions,
+        deletions,
+        type: change.type || change.nodeType || 'MODIFY'
+      };
+    });
+
+    const result: DiffStatsResult = {
+      totalFiles: response.data.size || files.length,
+      totalAdditions,
+      totalDeletions,
+      files
+    };
+
+    // Add pagination info if not last page
+    const paginationInfo = {
+      ...result,
+      isLastPage: response.data.isLastPage,
+      nextStart: response.data.nextPageStart,
+      showing: files.length
+    };
+
+    return {
+      content: [{ type: 'text', text: JSON.stringify(paginationInfo, null, 2) }]
+    };
+  }
+
+  private async getDiffForFiles(params: PullRequestParams, filePaths: string[], contextLines: number = 10): Promise<{ content: Array<{ type: string; text: string }> }> {
+    const { project, repository, prId } = params;
+
+    if (!project || !repository || !prId) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        'Project, repository, and prId are required'
+      );
+    }
+
+    if (!filePaths || filePaths.length === 0) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        'filePaths array is required and must not be empty'
+      );
+    }
+
+    // Fetch diffs for each specified file
+    const diffs: string[] = [];
+    const errors: string[] = [];
+
+    for (const filePath of filePaths) {
+      try {
+        const response = await this.api.get(
+          `/projects/${project}/repos/${repository}/pull-requests/${prId}/diff/${filePath}`,
+          {
+            params: { contextLines },
+            headers: { Accept: 'text/plain' }
+          }
+        );
+        diffs.push(`=== ${filePath} ===\n${response.data}`);
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 404) {
+          errors.push(`File not found in diff: ${filePath}`);
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    let result = diffs.join('\n\n');
+    if (errors.length > 0) {
+      result += `\n\n[*** WARNINGS ***]\n${errors.join('\n')}`;
+    }
+
+    return {
+      content: [{ type: 'text', text: result }]
     };
   }
 
