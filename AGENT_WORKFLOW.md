@@ -15,7 +15,7 @@ list_repositories(project: "KEY")    # Find repository slugs
 1. get_pull_request(repository, prId)    # Get PR metadata, status, reviewers
 
 2. get_diff_stats(repository, prId)      # Check scope (file count, lines changed)
-Y
+
 3. Based on stats:
    - Small PR (<50 files):
      get_diff(repository, prId)
@@ -30,6 +30,9 @@ Y
        filePaths: ["src/index.ts", "src/utils.ts"])
 
 4. get_comments(repository, prId)        # Read existing discussion
+   # Filter out bot comments:
+   get_comments(repository, prId,
+     excludeUsers: ["sonarqube-bot", "jenkins", "ci-bot"])
 ```
 
 ## Code Review Actions
@@ -96,10 +99,27 @@ Common `includePaths` patterns:
 - `**/*.py` - Python files
 - `*.md` - Markdown at root level
 
+## Handling PRs with Bot Comments
+
+PRs often have many automated comments from CI/CD bots. Filter them out:
+
+```
+get_comments(repository, prId,
+  excludeUsers: ["sonarqube-bot", "jenkins", "bitbucket-build", "ci-bot"])
+```
+
+Common bot usernames to exclude:
+- `sonarqube-bot`, `sonarcloud-bot` - Code quality
+- `jenkins`, `jenkins-bot` - CI/CD
+- `bitbucket-build` - Bitbucket Pipelines
+- `dependabot`, `renovate` - Dependency updates
+- `codecov`, `coveralls` - Code coverage
+
 ## Tips
 
 - Always call `get_diff_stats` before `get_diff` on unfamiliar PRs
 - Use `excludePaths` to filter generated files, lock files, and vendor code
 - Use `maxFiles` and `maxTotalLines` to prevent context overflow
+- Use `excludeUsers` in `get_comments` to filter out bot noise
 - Set `BITBUCKET_DEFAULT_PROJECT` env var to avoid repeating project key
 - Use `contextLines` parameter to control surrounding code context (default: 10)

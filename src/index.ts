@@ -400,13 +400,18 @@ class BitbucketServer {
         },
         {
           name: 'get_comments',
-          description: 'Retrieve only the comments from a pull request. Use this when you specifically want to read the discussion and feedback comments without other activities like reviews or commits.',
+          description: 'Retrieve only the comments from a pull request. Use this when you specifically want to read the discussion and feedback comments without other activities like reviews or commits. Supports filtering out bot users.',
           inputSchema: {
             type: 'object',
             properties: {
               project: { type: 'string', description: 'Bitbucket project key. If omitted, uses BITBUCKET_DEFAULT_PROJECT environment variable.' },
               repository: { type: 'string', description: 'Repository slug containing the pull request.' },
-              prId: { type: 'number', description: 'Pull request ID to get comments for.' }
+              prId: { type: 'number', description: 'Pull request ID to get comments for.' },
+              excludeUsers: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'List of usernames to exclude from results (e.g., ["sonarqube-bot", "jenkins", "ci-bot"]). Useful for filtering out bot comments.'
+              }
             },
             required: ['repository', 'prId']
           }
@@ -645,7 +650,10 @@ class BitbucketServer {
               repository: args.repository as string,
               prId: args.prId as number
             };
-            return await this.getComments(commentsPrParams);
+            return await this.getComments(
+              commentsPrParams,
+              args.excludeUsers as string[]
+            );
           }
 
           case 'search': {
@@ -1349,23 +1357,55 @@ class BitbucketServer {
     };
   }
 
-  private async getComments(params: PullRequestParams) {
+  private async getComments(params: PullRequestParams, excludeUsers?: string[]) {
     const { project, repository, prId } = params;
-    
+
     if (!project || !repository || !prId) {
       throw new McpError(
         ErrorCode.InvalidParams,
         'Project, repository, and prId are required'
       );
     }
-    
+
     const response = await this.api.get(
       `/projects/${project}/repos/${repository}/pull-requests/${prId}/activities`
     );
 
-    const comments = response.data.values.filter(
+    let comments = response.data.values.filter(
       (activity: BitbucketActivity) => activity.action === 'COMMENTED'
     );
+
+    // Filter out comments from excluded users
+    if (excludeUsers && excludeUsers.length > 0) {
+      const excludeSet = new Set(excludeUsers.map(u => u.toLowerCase()));
+      const totalBefore = comments.length;
+
+      comments = comments.filter((activity: BitbucketActivity) => {
+        const comment = activity.comment as { author?: { name?: string; slug?: string; displayName?: string } } | undefined;
+        const authorName = comment?.author?.name?.toLowerCase() || '';
+        const authorSlug = comment?.author?.slug?.toLowerCase() || '';
+        const authorDisplayName = comment?.author?.displayName?.toLowerCase() || '';
+
+        // Check if any of the author identifiers match excluded users
+        return !excludeSet.has(authorName) &&
+               !excludeSet.has(authorSlug) &&
+               !excludeSet.has(authorDisplayName);
+      });
+
+      const filtered = totalBefore - comments.length;
+      if (filtered > 0) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              filtered: `Excluded ${filtered} comments from: ${excludeUsers.join(', ')}`,
+              total: comments.length,
+              comments
+            }, null, 2)
+          }]
+        };
+      }
+    }
 
     return {
       content: [{ type: 'text', text: JSON.stringify(comments, null, 2) }]
