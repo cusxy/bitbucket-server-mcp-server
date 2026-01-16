@@ -1618,8 +1618,14 @@ class BitbucketServer {
   }
 }
 
-const server = new BitbucketServer();
-server.run().catch((error) => {
-  logger.error('Server error', error);
-  process.exit(1);
-});
+export { BitbucketServer };
+
+// Only run when executed directly (not when imported for testing)
+const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+if (isMainModule) {
+  const server = new BitbucketServer();
+  server.run().catch((error) => {
+    logger.error('Server error', error);
+    process.exit(1);
+  });
+}
