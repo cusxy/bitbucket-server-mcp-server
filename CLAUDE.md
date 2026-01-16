@@ -70,3 +70,4 @@ Optional:
 - `BITBUCKET_DEFAULT_PROJECT`: Default project key
 - `BITBUCKET_DIFF_MAX_LINES_PER_FILE`: Truncate large diffs
 - `BITBUCKET_READ_ONLY`: Enable read-only mode
+- `BITBUCKET_LOG_FILE`: Custom log file path (default: `bitbucket.log`)

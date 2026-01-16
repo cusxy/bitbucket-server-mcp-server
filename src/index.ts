@@ -11,11 +11,12 @@ import axios, { AxiosInstance } from 'axios';
 import winston from 'winston';
 
 // Configuration du logger
+const logFile = process.env.BITBUCKET_LOG_FILE || 'bitbucket.log';
 const logger = winston.createLogger({
   level: 'info',
   format: winston.format.json(),
   transports: [
-    new winston.transports.File({ filename: 'bitbucket.log' })
+    new winston.transports.File({ filename: logFile })
   ]
 });
 

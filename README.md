@@ -405,6 +405,7 @@ The server requires configuration in the VSCode MCP settings file. Here's a samp
 - `BITBUCKET_DEFAULT_PROJECT` (optional): Default project key to use when not specified in tool calls
 - `BITBUCKET_DIFF_MAX_LINES_PER_FILE` (optional): Default maximum lines to show per file in diffs. Set to prevent large files from overwhelming output. Can be overridden by the `maxLinesPerFile` parameter in `get_diff` calls.
 - `BITBUCKET_READ_ONLY` (optional): Set to `true` to enable read-only mode
+- `BITBUCKET_LOG_FILE` (optional): Path to the log file (default: `bitbucket.log` in current directory)
 
 **Note**: With the new optional project support, you can now:
 
