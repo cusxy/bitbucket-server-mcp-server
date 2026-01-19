@@ -98,6 +98,72 @@ interface DiffFilterOptions {
   maxTotalLines?: number;
 }
 
+interface CompactComment {
+  id: number;
+  text: string;
+  author: string;
+  createdDate: string;
+  severity?: string;
+  state?: string;
+  anchor?: {
+    path: string;
+    line?: number;
+    lineType?: string;
+  };
+  replies?: CompactComment[];
+}
+
+interface BitbucketComment {
+  id: number;
+  text: string;
+  author?: {
+    displayName?: string;
+    name?: string;
+  };
+  createdDate?: number;
+  severity?: string;
+  state?: string;
+  anchor?: {
+    path?: string;
+    line?: number;
+    lineType?: string;
+  };
+  comments?: BitbucketComment[];
+}
+
+function formatComment(comment: BitbucketComment): CompactComment {
+  const result: CompactComment = {
+    id: comment.id,
+    text: comment.text,
+    author: comment.author?.displayName || comment.author?.name || 'Unknown',
+    createdDate: comment.createdDate
+      ? new Date(comment.createdDate).toISOString()
+      : 'Unknown',
+  };
+
+  if (comment.severity && comment.severity !== 'NORMAL') {
+    result.severity = comment.severity;
+  }
+
+  if (comment.state) {
+    result.state = comment.state;
+  }
+
+  if (comment.anchor?.path) {
+    result.anchor = {
+      path: comment.anchor.path,
+      ...(comment.anchor.line !== undefined && { line: comment.anchor.line }),
+      ...(comment.anchor.lineType && { lineType: comment.anchor.lineType }),
+    };
+  }
+
+  if (comment.comments && comment.comments.length > 0) {
+    result.replies = comment.comments.map(formatComment);
+  }
+
+  return result;
+}
+
 interface DiffStatsResult {
   totalFiles: number;
   totalAdditions: number;
@@ -1372,44 +1438,48 @@ class BitbucketServer {
       `/projects/${project}/repos/${repository}/pull-requests/${prId}/activities`
     );
 
-    let comments = response.data.values.filter(
+    let activities = response.data.values.filter(
       (activity: BitbucketActivity) => activity.action === 'COMMENTED'
     );
 
     // Filter out comments from excluded users
+    let filteredCount = 0;
     if (excludeUsers && excludeUsers.length > 0) {
       const excludeSet = new Set(excludeUsers.map(u => u.toLowerCase()));
-      const totalBefore = comments.length;
+      const totalBefore = activities.length;
 
-      comments = comments.filter((activity: BitbucketActivity) => {
-        const comment = activity.comment as { author?: { name?: string; slug?: string; displayName?: string } } | undefined;
+      activities = activities.filter((activity: BitbucketActivity) => {
+        const comment = activity.comment as BitbucketComment | undefined;
         const authorName = comment?.author?.name?.toLowerCase() || '';
-        const authorSlug = comment?.author?.slug?.toLowerCase() || '';
         const authorDisplayName = comment?.author?.displayName?.toLowerCase() || '';
 
-        // Check if any of the author identifiers match excluded users
-        return !excludeSet.has(authorName) &&
-               !excludeSet.has(authorSlug) &&
-               !excludeSet.has(authorDisplayName);
+        return !excludeSet.has(authorName) && !excludeSet.has(authorDisplayName);
       });
 
-      const filtered = totalBefore - comments.length;
-      if (filtered > 0) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              filtered: `Excluded ${filtered} comments from: ${excludeUsers.join(', ')}`,
-              total: comments.length,
-              comments
-            }, null, 2)
-          }]
-        };
-      }
+      filteredCount = totalBefore - activities.length;
+    }
+
+    // Convert to compact format
+    const compactComments = activities.map((activity: BitbucketActivity) => {
+      const comment = activity.comment as BitbucketComment;
+      return formatComment(comment);
+    });
+
+    const result: {
+      total: number;
+      filtered?: string;
+      comments: CompactComment[];
+    } = {
+      total: compactComments.length,
+      comments: compactComments,
+    };
+
+    if (filteredCount > 0) {
+      result.filtered = `Excluded ${filteredCount} comments from: ${excludeUsers!.join(', ')}`;
     }
 
     return {
-      content: [{ type: 'text', text: JSON.stringify(comments, null, 2) }]
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
     };
   }
 
