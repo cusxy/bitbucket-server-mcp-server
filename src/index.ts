@@ -164,6 +164,44 @@ function formatComment(comment: BitbucketComment): CompactComment {
   return result;
 }
 
+interface CompactPullRequest {
+  id: number;
+  title: string;
+  description?: string;
+  state: string;
+  author: string;
+  createdDate: string;
+  updatedDate: string;
+  sourceBranch: string;
+  targetBranch: string;
+  reviewers: Array<{
+    user: string;
+    status: string;
+    approved: boolean;
+  }>;
+  participants?: Array<{
+    user: string;
+    role: string;
+  }>;
+}
+
+interface CompactReview {
+  user: string;
+  action: string;
+  date: string;
+}
+
+interface CompactActivity {
+  id: number;
+  action: string;
+  date: string;
+  user: string;
+  comment?: {
+    id: number;
+    text: string;
+  };
+}
+
 interface DiffStatsResult {
   totalFiles: number;
   totalAdditions: number;
@@ -881,20 +919,54 @@ class BitbucketServer {
 
   private async getPullRequest(params: PullRequestParams) {
     const { project, repository, prId } = params;
-    
+
     if (!project || !repository || !prId) {
       throw new McpError(
         ErrorCode.InvalidParams,
         'Project, repository, and prId are required'
       );
     }
-    
+
     const response = await this.api.get(
       `/projects/${project}/repos/${repository}/pull-requests/${prId}`
     );
 
+    const pr = response.data;
+
+    const compactPR: CompactPullRequest = {
+      id: pr.id,
+      title: pr.title,
+      description: pr.description || undefined,
+      state: pr.state,
+      author: pr.author?.user?.displayName || pr.author?.user?.name || 'Unknown',
+      createdDate: pr.createdDate ? new Date(pr.createdDate).toISOString() : 'Unknown',
+      updatedDate: pr.updatedDate ? new Date(pr.updatedDate).toISOString() : 'Unknown',
+      sourceBranch: pr.fromRef?.displayId || pr.fromRef?.id || 'Unknown',
+      targetBranch: pr.toRef?.displayId || pr.toRef?.id || 'Unknown',
+      reviewers: (pr.reviewers || []).map((reviewer: {
+        user?: { displayName?: string; name?: string };
+        status?: string;
+        approved?: boolean;
+      }) => ({
+        user: reviewer.user?.displayName || reviewer.user?.name || 'Unknown',
+        status: reviewer.status || 'UNAPPROVED',
+        approved: reviewer.approved || false,
+      })),
+    };
+
+    // Add participants if present and different from reviewers
+    if (pr.participants && pr.participants.length > 0) {
+      compactPR.participants = pr.participants.map((p: {
+        user?: { displayName?: string; name?: string };
+        role?: string;
+      }) => ({
+        user: p.user?.displayName || p.user?.name || 'Unknown',
+        role: p.role || 'PARTICIPANT',
+      }));
+    }
+
     return {
-      content: [{ type: 'text', text: JSON.stringify(response.data, null, 2) }]
+      content: [{ type: 'text', text: JSON.stringify(compactPR, null, 2) }]
     };
   }
 
@@ -1384,43 +1456,88 @@ class BitbucketServer {
 
   private async getReviews(params: PullRequestParams) {
     const { project, repository, prId } = params;
-    
+
     if (!project || !repository || !prId) {
       throw new McpError(
         ErrorCode.InvalidParams,
         'Project, repository, and prId are required'
       );
     }
-    
+
     const response = await this.api.get(
       `/projects/${project}/repos/${repository}/pull-requests/${prId}/activities`
     );
 
-    const reviews = response.data.values.filter(
-      (activity: BitbucketActivity) => activity.action === 'APPROVED' || activity.action === 'REVIEWED'
-    );
+    const reviews = response.data.values
+      .filter((activity: BitbucketActivity) =>
+        activity.action === 'APPROVED' || activity.action === 'REVIEWED'
+      )
+      .map((activity: BitbucketActivity): CompactReview => {
+        const user = activity.user as { displayName?: string; name?: string } | undefined;
+        const createdDate = activity.createdDate as number | undefined;
+        return {
+          user: user?.displayName || user?.name || 'Unknown',
+          action: activity.action,
+          date: createdDate ? new Date(createdDate).toISOString() : 'Unknown',
+        };
+      });
 
     return {
-      content: [{ type: 'text', text: JSON.stringify(reviews, null, 2) }]
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ total: reviews.length, reviews }, null, 2)
+      }]
     };
   }
 
   private async getActivities(params: PullRequestParams) {
     const { project, repository, prId } = params;
-    
+
     if (!project || !repository || !prId) {
       throw new McpError(
         ErrorCode.InvalidParams,
         'Project, repository, and prId are required'
       );
     }
-    
+
     const response = await this.api.get(
       `/projects/${project}/repos/${repository}/pull-requests/${prId}/activities`
     );
 
+    const activities = (response.data.values || []).map((activity: BitbucketActivity): CompactActivity => {
+      const user = activity.user as { displayName?: string; name?: string } | undefined;
+      const createdDate = activity.createdDate as number | undefined;
+      const comment = activity.comment as BitbucketComment | undefined;
+
+      const result: CompactActivity = {
+        id: activity.id as number,
+        action: activity.action,
+        date: createdDate ? new Date(createdDate).toISOString() : 'Unknown',
+        user: user?.displayName || user?.name || 'Unknown',
+      };
+
+      // Include comment info for COMMENTED actions
+      if (activity.action === 'COMMENTED' && comment) {
+        result.comment = {
+          id: comment.id,
+          text: comment.text,
+        };
+      }
+
+      return result;
+    });
+
+    // Group by action type for summary
+    const summary: Record<string, number> = {};
+    for (const activity of activities) {
+      summary[activity.action] = (summary[activity.action] || 0) + 1;
+    }
+
     return {
-      content: [{ type: 'text', text: JSON.stringify(response.data, null, 2) }]
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ total: activities.length, summary, activities }, null, 2)
+      }]
     };
   }
 
